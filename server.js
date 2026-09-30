@@ -3,11 +3,33 @@ require('dotenv').config();
 const express = require('express'), mongoose = require('mongoose'), bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken'), multer = require('multer'), cors = require('cors');
 const path = require('path'), fs = require('fs');
+const { put, del } = require('@vercel/blob');
 
 const { MONGO_URI, JWT_SECRET = 'change-me', ADMIN_EMAIL = '', ADMIN_PASSWORD = '', PORT = 3000 } = process.env;
 const app = express();
 app.use(cors());
 app.use(express.json());
+let mongoPromise;
+
+async function connectDB() {
+  if (!mongoPromise) {
+    mongoPromise = mongoose.connect(MONGO_URI, {
+      serverSelectionTimeoutMS: 10000,
+    })
+      .then(async () => {
+        await seedAdmin();
+        console.log('MongoDB connected');
+      })
+      .catch(err => {
+        console.error('MongoDB connect nahi hua:', err.message);
+        mongoPromise = null;
+        throw err;
+      });
+  }
+
+  return mongoPromise;
+}
+
 app.get('/', (req, res) => {
   res.json({
     ok: true,
@@ -15,16 +37,23 @@ app.get('/', (req, res) => {
     message: 'Backend is running'
   });
 });
-const uploadDir = '/tmp/uploads';
-fs.mkdirSync(uploadDir, { recursive: true });
-app.use('/uploads', express.static(uploadDir));
 
+app.use(async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (err) {
+    res.status(500).json({
+      error: 'Database connection failed',
+      detail: err.message,
+    });
+  }
+});
 const upload = multer({
-  storage: multer.diskStorage({
-    destination: '/tmp/uploads',
-    filename: (r, f, cb) => cb(null, Date.now() + '-' + Math.round(Math.random() * 1e6) + (path.extname(f.originalname) || '.m4a')),
-  }),
-  limits: { fileSize: 30 * 1024 * 1024 },
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 4 * 1024 * 1024,
+  },
 });
 
 const { ObjectId } = mongoose.Schema.Types;
@@ -76,10 +105,37 @@ app.get('/me', auth, w(async (req, res) => {
 }));
 
 // ── Songs ──
-app.get('/songs', auth, w(async (req, res) => {
-  const q = req.user.role === 'admin' ? {} : { $or: [{ approved: true }, { uid: req.user.id }] };
-  const l = await Song.find(q).sort({ byAdmin: -1, createdAt: -1 });
-  res.json(l.map(songJson));
+app.post('/songs', auth, upload.single('audio'), w(async (req, res) => {
+  if (!req.file || !req.body.title) {
+    return res.status(400).json({
+      error: 'Naam aur audio zaroori hain'
+    });
+  }
+
+  const admin = req.user.role === 'admin';
+
+  const ext = path.extname(req.file.originalname) || '.m4a';
+
+  const filename =
+    `songs/${Date.now()}-${Math.round(Math.random() * 1e6)}${ext}`;
+
+  const blob = await put(filename, req.file.buffer, {
+    access: 'public',
+    contentType: req.file.mimetype || 'audio/mp4',
+    addRandomSuffix: true,
+  });
+
+  const s = await Song.create({
+    title: req.body.title,
+    lyrics: req.body.lyrics || '',
+    audio: blob.url,
+    by: req.user.name,
+    uid: req.user.id,
+    byAdmin: admin,
+    approved: admin,
+  });
+
+  res.json(songJson(s));
 }));
 
 app.get('/songs/pending', auth, adminOnly, w(async (req, res) => {
@@ -105,7 +161,9 @@ app.delete('/songs/:id', auth, w(async (req, res) => {
   const s = await Song.findById(req.params.id);
   if (!s) return res.json({ ok: true });
   if (req.user.role !== 'admin' && String(s.uid) !== req.user.id) return res.status(403).json({ error: 'Ijazat nahi' });
-  fs.unlink(path.join(__dirname, s.audio), () => {});
+  if (s.audio && s.audio.startsWith('http')) {
+  await del(s.audio);
+}
   await Playlist.updateMany({}, { $pull: { songIds: s._id } });
   await s.deleteOne();
   res.json({ ok: true });
@@ -167,34 +225,7 @@ async function seedAdmin() {
   console.log('Admin tayyar: ' + ADMIN_EMAIL);
 }
 
-let mongoPromise;
 
-async function connectDB() {
-  if (!mongoPromise) {
-    mongoPromise = mongoose.connect(MONGO_URI)
-      .then(async () => {
-        await seedAdmin();
-        console.log('MongoDB connected');
-      })
-      .catch(err => {
-        console.error('MongoDB connect nahi hua:', err.message);
-        mongoPromise = null;
-        throw err;
-      });
-  }
-
-  return mongoPromise;
-}
-
-// Vercel serverless handler
-app.use(async (req, res, next) => {
-  try {
-    await connectDB();
-    next();
-  } catch (err) {
-    res.status(500).json({ error: 'Database connection failed' });
-  }
-});
 
 module.exports = app;
 

@@ -3,7 +3,7 @@ require('dotenv').config();
 const express = require('express'), mongoose = require('mongoose'), bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken'), multer = require('multer'), cors = require('cors');
 const path = require('path'), fs = require('fs');
-const { put, del } = require('@vercel/blob');
+const { put, del, issueSignedToken, presignUrl } = require('@vercel/blob');
 
 const { MONGO_URI, JWT_SECRET = 'change-me', ADMIN_EMAIL = '', ADMIN_PASSWORD = '', PORT = 3000 } = process.env;
 const app = express();
@@ -104,7 +104,20 @@ app.get('/me', auth, w(async (req, res) => {
   res.json(userJson(u));
 }));
 
+
 // ── Songs ──
+
+app.get('/songs', auth, w(async (req, res) => {
+  const songs = await Song.find({
+    $or: [
+      { approved: true },
+      { uid: req.user.id }
+    ]
+  }).sort({ createdAt: -1 });
+
+  res.json(songs.map(songJson));
+}));
+
 app.post('/songs', auth, upload.single('audio'), w(async (req, res) => {
   if (!req.file || !req.body.title) {
     return res.status(400).json({
@@ -120,7 +133,7 @@ app.post('/songs', auth, upload.single('audio'), w(async (req, res) => {
     `songs/${Date.now()}-${Math.round(Math.random() * 1e6)}${ext}`;
 
   const blob = await put(filename, req.file.buffer, {
-    access: 'public',
+    access: 'private',
     contentType: req.file.mimetype || 'audio/mp4',
     addRandomSuffix: true,
   });
@@ -128,7 +141,7 @@ app.post('/songs', auth, upload.single('audio'), w(async (req, res) => {
   const s = await Song.create({
     title: req.body.title,
     lyrics: req.body.lyrics || '',
-    audio: blob.url,
+    audio: blob.pathname,
     by: req.user.name,
     uid: req.user.id,
     byAdmin: admin,
@@ -139,33 +152,82 @@ app.post('/songs', auth, upload.single('audio'), w(async (req, res) => {
 }));
 
 app.get('/songs/pending', auth, adminOnly, w(async (req, res) => {
-  res.json((await Song.find({ approved: false }).sort({ createdAt: -1 })).map(songJson));
+  res.json(
+    (await Song.find({ approved: false }).sort({ createdAt: -1 }))
+      .map(songJson)
+  );
 }));
 
-app.post('/songs', auth, upload.single('audio'), w(async (req, res) => {
-  if (!req.file || !req.body.title) return res.status(400).json({ error: 'Naam aur audio zaroori hain' });
-  const admin = req.user.role === 'admin';
-  const s = await Song.create({
-    title: req.body.title, lyrics: req.body.lyrics || '', audio: '/uploads/' + req.file.filename,
-    by: req.user.name, uid: req.user.id, byAdmin: admin, approved: admin,
+app.get('/songs/:id/audio', auth, w(async (req, res) => {
+  const s = await Song.findById(req.params.id);
+
+  if (!s) {
+    return res.status(404).json({
+      error: 'Song nahi mila'
+    });
+  }
+
+  if (
+    !s.approved &&
+    req.user.role !== 'admin' &&
+    String(s.uid) !== String(req.user.id)
+  ) {
+    return res.status(403).json({
+      error: 'Ijazat nahi'
+    });
+  }
+
+  const token = await issueSignedToken({
+    pathname: s.audio,
+    operations: ['get'],
   });
-  res.json(songJson(s));
+
+  const { presignedUrl } = await presignUrl(token, {
+    pathname: s.audio,
+    operation: 'get',
+    validUntil: Date.now() + 5 * 60 * 1000,
+  });
+
+  res.json({
+    url: presignedUrl,
+  });
 }));
 
 app.post('/songs/:id/approve', auth, adminOnly, w(async (req, res) => {
-  await Song.findByIdAndUpdate(req.params.id, { approved: true });
+  await Song.findByIdAndUpdate(req.params.id, {
+    approved: true
+  });
+
   res.json({ ok: true });
 }));
 
 app.delete('/songs/:id', auth, w(async (req, res) => {
   const s = await Song.findById(req.params.id);
-  if (!s) return res.json({ ok: true });
-  if (req.user.role !== 'admin' && String(s.uid) !== req.user.id) return res.status(403).json({ error: 'Ijazat nahi' });
-  if (s.audio && s.audio.startsWith('http')) {
-  await del(s.audio);
-}
-  await Playlist.updateMany({}, { $pull: { songIds: s._id } });
+
+  if (!s) {
+    return res.json({ ok: true });
+  }
+
+  if (
+    req.user.role !== 'admin' &&
+    String(s.uid) !== req.user.id
+  ) {
+    return res.status(403).json({
+      error: 'Ijazat nahi'
+    });
+  }
+
+  if (s.audio) {
+    await del(s.audio);
+  }
+
+  await Playlist.updateMany(
+    {},
+    { $pull: { songIds: s._id } }
+  );
+
   await s.deleteOne();
+
   res.json({ ok: true });
 }));
 

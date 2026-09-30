@@ -8,12 +8,13 @@ const { MONGO_URI, JWT_SECRET = 'change-me', ADMIN_EMAIL = '', ADMIN_PASSWORD = 
 const app = express();
 app.use(cors());
 app.use(express.json());
-fs.mkdirSync('uploads', { recursive: true });
-app.use('/uploads', express.static('uploads'));
+const uploadDir = '/tmp/uploads';
+fs.mkdirSync(uploadDir, { recursive: true });
+app.use('/uploads', express.static(uploadDir));
 
 const upload = multer({
   storage: multer.diskStorage({
-    destination: 'uploads',
+    destination: '/tmp/uploads',
     filename: (r, f, cb) => cb(null, Date.now() + '-' + Math.round(Math.random() * 1e6) + (path.extname(f.originalname) || '.m4a')),
   }),
   limits: { fileSize: 30 * 1024 * 1024 },

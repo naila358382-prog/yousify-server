@@ -8,6 +8,13 @@ const { MONGO_URI, JWT_SECRET = 'change-me', ADMIN_EMAIL = '', ADMIN_PASSWORD = 
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.get('/', (req, res) => {
+  res.json({
+    ok: true,
+    service: 'Yousify API',
+    message: 'Backend is running'
+  });
+});
 const uploadDir = '/tmp/uploads';
 fs.mkdirSync(uploadDir, { recursive: true });
 app.use('/uploads', express.static(uploadDir));

@@ -160,7 +160,42 @@ async function seedAdmin() {
   console.log('Admin tayyar: ' + ADMIN_EMAIL);
 }
 
-mongoose.connect(MONGO_URI).then(async () => {
-  await seedAdmin();
-  app.listen(PORT, '0.0.0.0', () => console.log('Yousify API chal rahi hai: port ' + PORT));
-}).catch(e => { console.error('MongoDB connect nahi hua:', e.message); process.exit(1); });
+let mongoPromise;
+
+async function connectDB() {
+  if (!mongoPromise) {
+    mongoPromise = mongoose.connect(MONGO_URI)
+      .then(async () => {
+        await seedAdmin();
+        console.log('MongoDB connected');
+      })
+      .catch(err => {
+        console.error('MongoDB connect nahi hua:', err.message);
+        mongoPromise = null;
+        throw err;
+      });
+  }
+
+  return mongoPromise;
+}
+
+// Vercel serverless handler
+app.use(async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (err) {
+    res.status(500).json({ error: 'Database connection failed' });
+  }
+});
+
+module.exports = app;
+
+// Local development ke liye
+if (require.main === module) {
+  connectDB().then(() => {
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log('Yousify API chal rahi hai: port ' + PORT);
+    });
+  });
+}

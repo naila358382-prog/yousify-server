@@ -159,23 +159,48 @@ app.get('/songs/pending', auth, adminOnly, w(async (req, res) => {
 }));
 
 app.get('/songs/:id/audio', auth, w(async (req, res) => {
+  console.log('AUDIO REQUEST:', req.params.id);
+  console.log('USER:', req.user?.id);
+
   const s = await Song.findById(req.params.id);
 
   if (!s) {
+    console.log('AUDIO ERROR: Song nahi mila');
+
     return res.status(404).json({
       error: 'Song nahi mila'
     });
   }
+
+  console.log('SONG FOUND:', {
+    id: s.id,
+    title: s.title,
+    audio: s.audio,
+    approved: s.approved,
+    uid: String(s.uid),
+  });
 
   if (
     !s.approved &&
     req.user.role !== 'admin' &&
     String(s.uid) !== String(req.user.id)
   ) {
+    console.log('AUDIO ERROR: Ijazat nahi');
+
     return res.status(403).json({
       error: 'Ijazat nahi'
     });
   }
+
+  if (!s.audio) {
+    console.log('AUDIO ERROR: Blob pathname missing');
+
+    return res.status(500).json({
+      error: 'Audio file missing'
+    });
+  }
+
+  console.log('CREATING SIGNED URL FOR:', s.audio);
 
   const token = await issueSignedToken({
     pathname: s.audio,
@@ -187,6 +212,8 @@ app.get('/songs/:id/audio', auth, w(async (req, res) => {
     operation: 'get',
     validUntil: Date.now() + 5 * 60 * 1000,
   });
+
+  console.log('SIGNED URL CREATED:', !!presignedUrl);
 
   res.json({
     url: presignedUrl,

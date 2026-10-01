@@ -3,7 +3,7 @@ require('dotenv').config();
 const express = require('express'), mongoose = require('mongoose'), bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken'), multer = require('multer'), cors = require('cors');
 const path = require('path'), fs = require('fs');
-const { put, del, issueSignedToken, presignUrl } = require('@vercel/blob');
+const { put, del } = require('@vercel/blob');
 
 const { MONGO_URI, JWT_SECRET = 'change-me', ADMIN_EMAIL = '', ADMIN_PASSWORD = '', PORT = 3000 } = process.env;
 const app = express();
@@ -133,20 +133,19 @@ app.post('/songs', auth, upload.single('audio'), w(async (req, res) => {
     `songs/${Date.now()}-${Math.round(Math.random() * 1e6)}${ext}`;
 
   const blob = await put(filename, req.file.buffer, {
-    access: 'private',
-    contentType: req.file.mimetype || 'audio/mp4',
-    addRandomSuffix: true,
-  });
-
+  access: 'public',
+  contentType: req.file.mimetype || 'audio/mp4',
+  addRandomSuffix: true,
+});
   const s = await Song.create({
-    title: req.body.title,
-    lyrics: req.body.lyrics || '',
-    audio: blob.pathname,
-    by: req.user.name,
-    uid: req.user.id,
-    byAdmin: admin,
-    approved: admin,
-  });
+  title: req.body.title,
+  lyrics: req.body.lyrics || '',
+  audio: blob.url,
+  by: req.user.name,
+  uid: req.user.id,
+  byAdmin: admin,
+  approved: admin,
+});
 
   res.json(songJson(s));
 }));
@@ -165,61 +164,33 @@ app.get('/songs/:id/audio', auth, w(async (req, res) => {
   const s = await Song.findById(req.params.id);
 
   if (!s) {
-    console.log('AUDIO ERROR: Song nahi mila');
-
     return res.status(404).json({
       error: 'Song nahi mila'
     });
   }
-
-  console.log('SONG FOUND:', {
-    id: s.id,
-    title: s.title,
-    audio: s.audio,
-    approved: s.approved,
-    uid: String(s.uid),
-  });
 
   if (
     !s.approved &&
     req.user.role !== 'admin' &&
     String(s.uid) !== String(req.user.id)
   ) {
-    console.log('AUDIO ERROR: Ijazat nahi');
-
     return res.status(403).json({
       error: 'Ijazat nahi'
     });
   }
 
   if (!s.audio) {
-    console.log('AUDIO ERROR: Blob pathname missing');
-
     return res.status(500).json({
       error: 'Audio file missing'
     });
   }
 
-  console.log('CREATING SIGNED URL FOR:', s.audio);
-
-  const token = await issueSignedToken({
-    pathname: s.audio,
-    operations: ['get'],
-  });
-
-  const { presignedUrl } = await presignUrl(token, {
-    pathname: s.audio,
-    operation: 'get',
-    validUntil: Date.now() + 5 * 60 * 1000,
-  });
-
-  console.log('SIGNED URL CREATED:', !!presignedUrl);
+  console.log('PUBLIC AUDIO URL:', s.audio);
 
   res.json({
-    url: presignedUrl,
+    url: s.audio,
   });
 }));
-
 app.post('/songs/:id/approve', auth, adminOnly, w(async (req, res) => {
   await Song.findByIdAndUpdate(req.params.id, {
     approved: true
